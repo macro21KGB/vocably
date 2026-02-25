@@ -103,10 +103,6 @@ async fn ask_ai_for_alternative_words(
 #[derive(Debug, serde::Deserialize, Clone)]
 struct AlternativeWord {
     word: String,
-    #[allow(dead_code)]
-    start_position: usize,
-    #[allow(dead_code)]
-    end_position: usize,
     alternatives: Vec<String>,
 }
 
@@ -253,32 +249,20 @@ impl eframe::App for MyEguiApp {
 
             if output.response.clicked() {
                 if let Some(cursor_range) = output.cursor_range {
-                    let cursor_char_idx = cursor_range.primary.index;
-                    let mut matches = Vec::new();
-                    for (i, alt) in self.alternatives.iter().enumerate() {
-                        if let Some(start) = self.initial_text.find(&alt.word) {
-                            let char_start = self.initial_text[..start].chars().count();
-                            let char_len = alt.word.chars().count();
-                            matches.push((char_start, char_start + char_len, i));
-                        }
-                    }
-                    matches.sort_by_key(|m| m.0);
-
-                    let mut valid_matches = Vec::new();
-                    let mut current_char = 0;
-                    for m in matches {
-                        if m.0 >= current_char {
-                            valid_matches.push(m);
-                            current_char = m.1;
-                        }
-                    }
-
-                    for &(char_start, char_end, alt_idx) in &valid_matches {
-                        if cursor_char_idx >= char_start && cursor_char_idx <= char_end {
-                            self.selected_idx = Some(alt_idx);
-                            break;
-                        }
-                    }
+                    let cursor_pos = cursor_range.primary.index; // this is the character offset (not the byte offset)
+                    self.selected_idx = self
+                        .alternatives
+                        .iter()
+                        .position(|alt| {
+                            if let Some(pos) = self.initial_text.find(&alt.word) {
+                                let word_start = pos;
+                                let word_end = pos + alt.word.len();
+                                cursor_pos >= word_start && cursor_pos <= word_end
+                            } else {
+                                false
+                            }
+                        })
+                        .or(self.selected_idx);
                 }
             }
         });
