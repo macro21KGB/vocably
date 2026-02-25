@@ -115,6 +115,8 @@ struct MyEguiApp {
     // Channel to receive results from async task
     #[serde(skip)]
     result_receiver: Option<mpsc::Receiver<Result<Vec<AlternativeWord>, String>>>,
+    #[serde(skip)]
+    selected_idx: Option<usize>,
 }
 
 impl MyEguiApp {
@@ -168,15 +170,13 @@ impl eframe::App for MyEguiApp {
             if !self.alternatives.is_empty() {
                 ui.separator();
                 ui.heading("Suggestions:");
-                for alt in &self.alternatives {
-                    ui.horizontal(|ui| {
-                        ui.label(format!("Word: '{}'", alt.word));
-                        ui.label("Alternatives: ");
-                        for word in &alt.alternatives {
-                            ui.label(word);
+                ui.horizontal_wrapped(|ui| {
+                    for (i, alt) in self.alternatives.iter().enumerate() {
+                        if ui.button(&alt.word).clicked() {
+                            self.selected_idx = Some(i);
                         }
-                    });
-                }
+                    }
+                });
             }
 
             let _output = egui::TextEdit::multiline(&mut self.initial_text)
@@ -185,5 +185,35 @@ impl eframe::App for MyEguiApp {
                 .desired_width(f32::INFINITY)
                 .show(ui);
         });
+
+        let mut replace_action = None;
+        if let Some(idx) = self.selected_idx {
+            if let Some(alt) = self.alternatives.get(idx) {
+                let mut is_open = true;
+                egui::Window::new(format!("Alternatives for '{}'", alt.word))
+                    .open(&mut is_open)
+                    .collapsible(false)
+                    .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                    .show(ctx, |ui| {
+                        for word in &alt.alternatives {
+                            if ui.button(word).clicked() {
+                                replace_action = Some((idx, word.clone()));
+                            }
+                        }
+                    });
+                if !is_open {
+                    self.selected_idx = None;
+                }
+            } else {
+                self.selected_idx = None;
+            }
+        }
+
+        if let Some((idx, new_word)) = replace_action {
+            let alt = &self.alternatives[idx];
+            self.initial_text = self.initial_text.replacen(&alt.word, &new_word, 1);
+            self.alternatives.remove(idx);
+            self.selected_idx = None;
+        }
     }
 }
