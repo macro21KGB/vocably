@@ -1,3 +1,6 @@
+use serde::{Deserialize, Serialize};
+use std::sync::mpsc;
+
 use eframe::egui;
 use llm::{
     builder::LLMBuilder,
@@ -17,11 +20,13 @@ async fn main() {
 async fn ask_ai_for_alternative_words(
     text: &str,
 ) -> Result<Vec<AlternativeWord>, Box<dyn std::error::Error>> {
-    let system_prompt = "You are a helpful assistant that provides alternative words for a given text, you will try to enhance or offer more appropriate suggestions for the words in the text, You will return a list fo word for the one you think will need changes and for each of this world you will give a list of alternatives, you will retrun the result in a json format, providing word,start_position,end_position and alternatives";
+    let system_prompt = "You are a helpful assistant that provides alternative words for a given text, you will try to enhance or offer more appropriate suggestions for the words in the text, You will return a list fo word for the one you think will need changes and for each of this world you will give a list of alternatives, you will retrun the result in a json format only provide the ARRAY of AlternativeWord with the following keys: word,start_position,end_position and alternatives, just output the array of objects withoyt any additional text or explaination, and no keys for grouping like 'suggested_changes' or 'alternative_words', just the array of objects";
     let schema_text = r#"
         {
-            "name": "AlternativeWordsResponse",
-            "schema": {
+            "type": "array",
+            "name": "alternative_words",
+            "description": "A list of words that have suggested alternatives, along with their positions in the original text and the alternative suggestions.",
+            "items": {
                 "type": "object",
                 "properties": {
                     "word": {
@@ -60,7 +65,6 @@ async fn ask_ai_for_alternative_words(
         .backend(llm::builder::LLMBackend::OpenRouter)
         .api_key(api_key)
         .model("google/gemini-2.5-flash")
-        .max_tokens(1024)
         .temperature(0.7)
         .system(system_prompt)
         .schema(schema)
@@ -100,46 +104,84 @@ struct AlternativeWord {
     word: String,
     start_position: usize,
     end_position: usize,
-    alteratives: Vec<String>,
+    alternatives: Vec<String>,
 }
 
-#[derive(Default)]
+#[derive(Default, Deserialize)]
 struct MyEguiApp {
     initial_text: String,
+    alternatives: Vec<AlternativeWord>,
+    error_message: Option<String>,
+    // Channel to receive results from async task
+    #[serde(skip)]
+    result_receiver: Option<mpsc::Receiver<Result<Vec<AlternativeWord>, String>>>,
 }
 
 impl MyEguiApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         cc.egui_ctx.set_visuals(egui::Visuals::light());
-        // Customize egui here with cc.egui_ctx.set_fonts and cc.egui_ctx.set_visuals.
-        // Restore app state using cc.storage (requires the "persistence" feature).
-        // Use the cc.gl (a glow::Context) to create graphics shaders and buffers that you can use
-        // for e.g. egui::PaintCallback.
         Self::default()
     }
 }
 
 impl eframe::App for MyEguiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::CentralPanel::default().show(ctx, |ui| {
-            let button_accept = ui.button("Analyze text");
-
-            if button_accept.clicked() {
-                let initial_text = self.initial_text.clone();
-                tokio::spawn(async move {
-                    match ask_ai_for_alternative_words(&initial_text).await {
-                        Ok(words) => {
-                            println!("Successfully got alternative words: {:?}", words);
-                        }
-                        Err(e) => {
-                            eprintln!("Error getting alternative words: {:?}", e);
-                        }
+        // Check for results from async task
+        if let Some(ref receiver) = self.result_receiver {
+            if let Ok(result) = receiver.try_recv() {
+                match result {
+                    Ok(words) => {
+                        self.alternatives = words;
+                        self.error_message = None;
                     }
-                });
-            };
+                    Err(e) => {
+                        self.error_message = Some(e);
+                    }
+                }
+                self.result_receiver = None;
+            }
+        }
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.heading("Text Analyzer");
+            ui.horizontal(|ui| {
+                let button_accept = ui.button("Analyze text");
+
+                if button_accept.clicked() && self.result_receiver.is_none() {
+                    let initial_text = self.initial_text.clone();
+                    let (tx, rx) = mpsc::channel();
+                    self.result_receiver = Some(rx);
+
+                    tokio::spawn(async move {
+                        let result = ask_ai_for_alternative_words(&initial_text).await;
+                        let _ = tx.send(result.map_err(|e| e.to_string()));
+                    });
+                }
+            });
+
+            // Show error if any
+            if let Some(ref error) = self.error_message {
+                ui.colored_label(egui::Color32::RED, error);
+            }
+
+            // Show alternatives
+            if !self.alternatives.is_empty() {
+                ui.separator();
+                ui.heading("Suggestions:");
+                for alt in &self.alternatives {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("Word: '{}'", alt.word));
+                        ui.label("Alternatives: ");
+                        for word in &alt.alternatives {
+                            ui.label(word);
+                        }
+                    });
+                }
+            }
+
             let _output = egui::TextEdit::multiline(&mut self.initial_text)
                 .hint_text("Type something!")
-                .desired_rows(54)
+                .desired_rows(10)
                 .desired_width(f32::INFINITY)
                 .show(ui);
         });
