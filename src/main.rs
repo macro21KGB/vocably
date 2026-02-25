@@ -50,9 +50,12 @@ async fn ask_ai_for_alternative_words(
         }
     "#;
 
-    let schema: StructuredOutputFormat = serde_json::from_str(schema_text)?;
+    let schema: StructuredOutputFormat =
+        serde_json::from_str(schema_text).map_err(|e| format!("Invalid JSON schema: {}", e))?;
+
     let api_key = std::env::var("OPENROUTER_API_KEY")
-        .expect("OPENROUTER_API_KEY environment variable not set");
+        .map_err(|_| "OPENROUTER_API_KEY environment variable not set")?;
+
     let llm = LLMBuilder::new()
         .backend(llm::builder::LLMBackend::OpenRouter)
         .api_key(api_key)
@@ -62,7 +65,7 @@ async fn ask_ai_for_alternative_words(
         .system(system_prompt)
         .schema(schema)
         .build()
-        .expect("Failed to build LLM");
+        .map_err(|e| format!("Failed to build LLM: {}", e))?;
 
     let messages = vec![
         ChatMessage::user()
@@ -70,21 +73,34 @@ async fn ask_ai_for_alternative_words(
             .build(),
     ];
 
-    match llm.chat(&messages).await {
-        Ok(text) => match serde_json::from_str::<Vec<AlternativeWord>>(&text) {
-            Ok(alternative_words) => Ok(alternative_words),
-            Err(e) => Err(Box::new(e)),
-        },
-        Err(e) => eprintln!("Chat error: {e}"),
-    }
+    let response = llm
+        .chat(&messages)
+        .await
+        .map_err(|e| format!("LLM chat error: {}", e))?;
+
+    let text = response
+        .text()
+        .ok_or_else(|| "Failed to get text from response".to_string())?;
+
+    // remove ```json and ``` if they exist
+    let text = text.trim();
+    let text = text.strip_prefix("```json").unwrap_or(text);
+    let text = text.strip_suffix("```").unwrap_or(text);
+
+    println!("Raw response text: {}", text);
+
+    let alternative_words: Vec<AlternativeWord> =
+        serde_json::from_str(&text).map_err(|e| format!("Failed to parse JSON response: {}", e))?;
+
+    Ok(alternative_words)
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Deserialize)]
 struct AlternativeWord {
     word: String,
     start_position: usize,
     end_position: usize,
-    alternatives: Vec<String>,
+    alteratives: Vec<String>,
 }
 
 #[derive(Default)]
@@ -113,11 +129,9 @@ impl eframe::App for MyEguiApp {
                 tokio::spawn(async move {
                     match ask_ai_for_alternative_words(&initial_text).await {
                         Ok(words) => {
-                            // TODO: Handle the successful result (e.g., update self.words)
                             println!("Successfully got alternative words: {:?}", words);
                         }
                         Err(e) => {
-                            // TODO: Handle the error
                             eprintln!("Error getting alternative words: {:?}", e);
                         }
                     }
