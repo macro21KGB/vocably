@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::sync::mpsc;
 
 use eframe::egui;
@@ -99,10 +99,12 @@ async fn ask_ai_for_alternative_words(
     Ok(alternative_words)
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, Clone)]
 struct AlternativeWord {
     word: String,
+    #[allow(dead_code)]
     start_position: usize,
+    #[allow(dead_code)]
     end_position: usize,
     alternatives: Vec<String>,
 }
@@ -166,24 +168,98 @@ impl eframe::App for MyEguiApp {
                 ui.colored_label(egui::Color32::RED, error);
             }
 
-            // Show alternatives
-            if !self.alternatives.is_empty() {
-                ui.separator();
-                ui.heading("Suggestions:");
-                ui.horizontal_wrapped(|ui| {
-                    for (i, alt) in self.alternatives.iter().enumerate() {
-                        if ui.button(&alt.word).clicked() {
-                            self.selected_idx = Some(i);
-                        }
-                    }
-                });
-            }
+            let alternatives_clone = self.alternatives.clone();
 
-            let _output = egui::TextEdit::multiline(&mut self.initial_text)
+            let output = egui::TextEdit::multiline(&mut self.initial_text)
                 .hint_text("Type something!")
                 .desired_rows(10)
                 .desired_width(f32::INFINITY)
+                .layouter(&mut |ui: &egui::Ui,
+                                dyn_string: &dyn egui::TextBuffer,
+                                wrap_width: f32| {
+                    let string = dyn_string.as_str();
+                    let mut job = egui::text::LayoutJob::default();
+                    job.wrap.max_width = wrap_width;
+                    let font_id = egui::TextStyle::Body.resolve(ui.style());
+                    let default_color = ui.visuals().text_color();
+
+                    let mut matches = Vec::new();
+                    for (i, alt) in alternatives_clone.iter().enumerate() {
+                        if let Some(start) = string.find(&alt.word) {
+                            matches.push((start, start + alt.word.len(), i));
+                        }
+                    }
+                    matches.sort_by_key(|m| m.0);
+
+                    let mut valid_matches = Vec::new();
+                    let mut current_byte = 0;
+                    for m in matches {
+                        if m.0 >= current_byte {
+                            valid_matches.push(m);
+                            current_byte = m.1;
+                        }
+                    }
+
+                    let mut current_byte = 0;
+                    for &(start, end, _idx) in &valid_matches {
+                        if start > current_byte {
+                            job.append(
+                                &string[current_byte..start],
+                                0.0,
+                                egui::TextFormat::simple(font_id.clone(), default_color),
+                            );
+                        }
+                        let mut highlight =
+                            egui::TextFormat::simple(font_id.clone(), default_color);
+                        highlight.background =
+                            egui::Color32::from_rgba_unmultiplied(100, 150, 255, 60);
+                        highlight.underline =
+                            egui::Stroke::new(2.0, egui::Color32::from_rgb(50, 100, 255));
+                        job.append(&string[start..end], 0.0, highlight);
+                        current_byte = end;
+                    }
+                    if current_byte < string.len() {
+                        job.append(
+                            &string[current_byte..],
+                            0.0,
+                            egui::TextFormat::simple(font_id.clone(), default_color),
+                        );
+                    }
+
+                    ui.fonts(|f| f.layout_job(job))
+                })
                 .show(ui);
+
+            if output.response.clicked() {
+                if let Some(cursor_range) = output.cursor_range {
+                    let cursor_char_idx = cursor_range.primary.index;
+                    let mut matches = Vec::new();
+                    for (i, alt) in self.alternatives.iter().enumerate() {
+                        if let Some(start) = self.initial_text.find(&alt.word) {
+                            let char_start = self.initial_text[..start].chars().count();
+                            let char_len = alt.word.chars().count();
+                            matches.push((char_start, char_start + char_len, i));
+                        }
+                    }
+                    matches.sort_by_key(|m| m.0);
+
+                    let mut valid_matches = Vec::new();
+                    let mut current_char = 0;
+                    for m in matches {
+                        if m.0 >= current_char {
+                            valid_matches.push(m);
+                            current_char = m.1;
+                        }
+                    }
+
+                    for &(char_start, char_end, alt_idx) in &valid_matches {
+                        if cursor_char_idx >= char_start && cursor_char_idx <= char_end {
+                            self.selected_idx = Some(alt_idx);
+                            break;
+                        }
+                    }
+                }
+            }
         });
 
         let mut replace_action = None;
