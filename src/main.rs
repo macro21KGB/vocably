@@ -1,3 +1,4 @@
+use egui::{Color32, FontId, TextFormat};
 use serde::Deserialize;
 use std::sync::mpsc;
 
@@ -167,67 +168,87 @@ impl eframe::App for MyEguiApp {
             if let Some(ref error) = self.error_message {
                 ui.colored_label(egui::Color32::RED, error);
             }
+            let mut layouter = |ui: &egui::Ui,
+                                buf: &dyn egui::TextBuffer,
+                                wrap_width: f32|
+             -> std::sync::Arc<egui::Galley> {
+                let content = &buf.as_str().to_string();
 
-            let alternatives_clone = self.alternatives.clone();
+                if self.alternatives.is_empty() {
+                    let layout_job = egui::text::LayoutJob::simple(
+                        content.clone(),
+                        FontId::proportional(16.0),
+                        Color32::BLACK,
+                        wrap_width,
+                    );
 
+                    let this = &ui;
+
+                    let reader = |f: &mut egui::epaint::FontsView<'_>| f.layout_job(layout_job);
+                    return this.ctx().fonts_mut(reader);
+                }
+
+                let mut cur_index = 0;
+                let mut layout_job = egui::text::LayoutJob::default();
+                layout_job.break_on_newline = true;
+                layout_job.wrap = egui::text::TextWrapping {
+                    max_width: wrap_width,
+                    break_anywhere: false,
+                    ..Default::default()
+                };
+
+                // delete duplicate alternatives for the same word, we will keep only the first one
+                let mut seen_words = std::collections::HashSet::new();
+                self.alternatives.retain(|alt| {
+                    if seen_words.contains(&alt.word) {
+                        false
+                    } else {
+                        seen_words.insert(alt.word.clone());
+                        true
+                    }
+                });
+
+                // if there are alternative, we will color the word with a different color
+                for alt in &self.alternatives {
+                    let word_start = content.find(&alt.word);
+                    if word_start.is_none() {
+                        continue;
+                    }
+                    let start_index = word_start.unwrap();
+                    let end_index = start_index + alt.word.len();
+
+                    layout_job.append(
+                        &content[cur_index..start_index],
+                        0.0,
+                        TextFormat {
+                            font_id: FontId::proportional(16.0),
+                            color: Color32::BLACK,
+                            ..Default::default()
+                        },
+                    );
+                    layout_job.append(
+                        &content[start_index..end_index],
+                        0.0,
+                        TextFormat {
+                            font_id: FontId::proportional(16.0),
+                            color: Color32::RED,
+                            ..Default::default()
+                        },
+                    );
+
+                    cur_index = end_index;
+                }
+
+                let this = &ui;
+
+                let reader = |f: &mut egui::epaint::FontsView<'_>| f.layout_job(layout_job);
+                this.ctx().fonts_mut(reader)
+            };
             let output = egui::TextEdit::multiline(&mut self.initial_text)
                 .hint_text("Type something!")
-                .desired_rows(10)
+                .desired_rows(30)
                 .desired_width(f32::INFINITY)
-                .layouter(&mut |ui: &egui::Ui,
-                                dyn_string: &dyn egui::TextBuffer,
-                                wrap_width: f32| {
-                    let string = dyn_string.as_str();
-                    let mut job = egui::text::LayoutJob::default();
-                    job.wrap.max_width = wrap_width;
-                    let font_id = egui::TextStyle::Body.resolve(ui.style());
-                    let default_color = ui.visuals().text_color();
-
-                    let mut matches = Vec::new();
-                    for (i, alt) in alternatives_clone.iter().enumerate() {
-                        if let Some(start) = string.find(&alt.word) {
-                            matches.push((start, start + alt.word.len(), i));
-                        }
-                    }
-                    matches.sort_by_key(|m| m.0);
-
-                    let mut valid_matches = Vec::new();
-                    let mut current_byte = 0;
-                    for m in matches {
-                        if m.0 >= current_byte {
-                            valid_matches.push(m);
-                            current_byte = m.1;
-                        }
-                    }
-
-                    let mut current_byte = 0;
-                    for &(start, end, _idx) in &valid_matches {
-                        if start > current_byte {
-                            job.append(
-                                &string[current_byte..start],
-                                0.0,
-                                egui::TextFormat::simple(font_id.clone(), default_color),
-                            );
-                        }
-                        let mut highlight =
-                            egui::TextFormat::simple(font_id.clone(), default_color);
-                        highlight.background =
-                            egui::Color32::from_rgba_unmultiplied(100, 150, 255, 60);
-                        highlight.underline =
-                            egui::Stroke::new(2.0, egui::Color32::from_rgb(50, 100, 255));
-                        job.append(&string[start..end], 0.0, highlight);
-                        current_byte = end;
-                    }
-                    if current_byte < string.len() {
-                        job.append(
-                            &string[current_byte..],
-                            0.0,
-                            egui::TextFormat::simple(font_id.clone(), default_color),
-                        );
-                    }
-
-                    ui.fonts(|f| f.layout_job(job))
-                })
+                .layouter(&mut layouter)
                 .show(ui);
 
             if output.response.clicked() {
