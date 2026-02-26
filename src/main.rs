@@ -1,6 +1,6 @@
 use egui::{Color32, FontId, TextFormat};
 use serde::{Deserialize, Serialize};
-use std::{env::join_paths, fs, sync::mpsc};
+use std::{fs, sync::mpsc};
 
 use eframe::egui;
 use llm::{
@@ -211,13 +211,14 @@ impl eframe::App for MyEguiApp {
 
                 if button_accept.clicked() && self.result_receiver.is_none() {
                     let initial_text = self.initial_text.clone();
+                    let options = self.options.clone();
+
                     let (tx, rx) = mpsc::channel();
                     self.result_receiver = Some(rx);
 
                     tokio::spawn(async move {
                         let result =
-                            ask_ai_for_alternative_words(&initial_text, Some(self.options.clone()))
-                                .await;
+                            ask_ai_for_alternative_words(&initial_text, Some(options)).await;
                         let _ = tx.send(result.map_err(|e| e.to_string()));
                     });
                 }
@@ -274,7 +275,9 @@ impl eframe::App for MyEguiApp {
                                     );
                                 });
                             ui.label("API Key:");
-                            ui.text_edit_singleline(&mut self.options.api_key);
+                            egui::TextEdit::singleline(&mut self.options.api_key)
+                                .password(true)
+                                .show(ui);
                             ui.label("Model:");
                             ui.text_edit_singleline(&mut self.options.model);
                             ui.label("Temperature:");
