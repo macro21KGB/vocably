@@ -1,6 +1,6 @@
 use egui::{Color32, FontId, TextFormat};
-use serde::Deserialize;
-use std::sync::mpsc;
+use serde::{Deserialize, Serialize};
+use std::{env::join_paths, fs, sync::mpsc};
 
 use eframe::egui;
 use llm::{
@@ -20,6 +20,7 @@ async fn main() {
 
 async fn ask_ai_for_alternative_words(
     text: &str,
+    provider_config: Option<ProviderConfig>,
 ) -> Result<Vec<AlternativeWord>, Box<dyn std::error::Error>> {
     let system_prompt = "You are a helpful assistant that provides alternative words for a given text, you will try to enhance or offer more appropriate suggestions for the words in the text, You will return a list fo word for the one you think will need changes and for each of this world you will give a list of alternatives, you will retrun the result in a json format only provide the ARRAY of AlternativeWord with the following keys: word,start_position,end_position and alternatives, just output the array of objects withoyt any additional text or explaination, and no keys for grouping like 'suggested_changes' or 'alternative_words', just the array of objects";
     let schema_text = r#"
@@ -56,17 +57,20 @@ async fn ask_ai_for_alternative_words(
         }
     "#;
 
+    if provider_config.is_none() {
+        eprintln!("No provider config provided, using defaults")
+    }
+
     let schema: StructuredOutputFormat =
         serde_json::from_str(schema_text).map_err(|e| format!("Invalid JSON schema: {}", e))?;
 
-    let api_key = std::env::var("OPENROUTER_API_KEY")
-        .map_err(|_| "OPENROUTER_API_KEY environment variable not set")?;
+    let provider_config = provider_config.unwrap_or_default();
 
     let llm = LLMBuilder::new()
         .backend(llm::builder::LLMBackend::OpenRouter)
-        .api_key(api_key)
-        .model("google/gemini-2.5-flash")
-        .temperature(0.7)
+        .api_key(provider_config.api_key)
+        .model(provider_config.model)
+        .temperature(provider_config.temperature)
         .system(system_prompt)
         .schema(schema)
         .build()
@@ -106,11 +110,64 @@ struct AlternativeWord {
     alternatives: Vec<String>,
 }
 
+#[derive(PartialEq, Debug, Deserialize, Serialize, Clone)]
+enum Provider {
+    OpenRouter,
+    Google,
+    Groq,
+    Antrophic,
+    Custom(String),
+}
+
+impl Default for Provider {
+    fn default() -> Self {
+        Provider::OpenRouter
+    }
+}
+
+#[derive(Default, Debug, Deserialize, Serialize, Clone)]
+struct ProviderConfig {
+    provider: Option<Provider>,
+    api_key: String,
+    model: String,
+    temperature: f32,
+}
+
+impl ProviderConfig {
+    fn load_from_file(&mut self) {
+        let home_dir = dirs::home_dir().expect("Could not find home directory");
+        let config_path = home_dir.join(".text_analyzer_config.json");
+
+        if let Ok(config_str) = fs::read_to_string(&config_path) {
+            if let Ok(config) = serde_json::from_str::<ProviderConfig>(&config_str) {
+                *self = config;
+            } else {
+                eprintln!("Failed to parse config file, using defaults");
+            }
+        } else {
+            eprintln!("No config file found, using defaults");
+        }
+    }
+
+    fn save_to_file(&self) {
+        let home_dir = dirs::home_dir().expect("Could not find home directory");
+        let config_path = home_dir.join(".text_analyzer_config.json");
+
+        if let Err(e) = fs::write(&config_path, serde_json::to_string_pretty(self).unwrap()) {
+            eprintln!("Failed to save config: {}", e);
+        } else {
+            println!("Config saved to {:?}", config_path);
+        }
+    }
+}
+
 #[derive(Default, Deserialize)]
 struct MyEguiApp {
     initial_text: String,
     alternatives: Vec<AlternativeWord>,
     error_message: Option<String>,
+    options_menu_open: bool,
+    options: ProviderConfig,
     // Channel to receive results from async task
     #[serde(skip)]
     result_receiver: Option<mpsc::Receiver<Result<Vec<AlternativeWord>, String>>>,
@@ -121,7 +178,11 @@ struct MyEguiApp {
 impl MyEguiApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         cc.egui_ctx.set_visuals(egui::Visuals::light());
-        Self::default()
+        let mut this = Self::default();
+
+        this.options.load_from_file();
+
+        this
     }
 }
 
@@ -154,9 +215,84 @@ impl eframe::App for MyEguiApp {
                     self.result_receiver = Some(rx);
 
                     tokio::spawn(async move {
-                        let result = ask_ai_for_alternative_words(&initial_text).await;
+                        let result =
+                            ask_ai_for_alternative_words(&initial_text, Some(self.options.clone()))
+                                .await;
                         let _ = tx.send(result.map_err(|e| e.to_string()));
                     });
+                }
+
+                let show_button = ui.button("Show Options");
+
+                if show_button.clicked() {
+                    self.options_menu_open = true;
+                }
+
+                if self.options_menu_open {
+                    let mut is_open = true;
+                    egui::Window::new("Options")
+                        .open(&mut is_open)
+                        .min_width(400.0)
+                        .min_height(600.0)
+                        .collapsible(false)
+                        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                        .show(ctx, |ui| {
+                            egui::ComboBox::from_label("Provider")
+                                .selected_text(match &self.options.provider {
+                                    Some(Provider::OpenRouter) => "OpenRouter",
+                                    Some(Provider::Google) => "Google",
+                                    Some(Provider::Groq) => "Groq",
+                                    Some(Provider::Antrophic) => "Anthropic",
+                                    Some(Provider::Custom(_)) => "Custom",
+                                    None => "Select a provider",
+                                })
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(
+                                        &mut self.options.provider,
+                                        Some(Provider::OpenRouter),
+                                        "OpenRouter",
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.options.provider,
+                                        Some(Provider::Google),
+                                        "Google",
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.options.provider,
+                                        Some(Provider::Groq),
+                                        "Groq",
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.options.provider,
+                                        Some(Provider::Antrophic),
+                                        "Anthropic",
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.options.provider,
+                                        Some(Provider::Custom("Custom".to_string())),
+                                        "Custom",
+                                    );
+                                });
+                            ui.label("API Key:");
+                            ui.text_edit_singleline(&mut self.options.api_key);
+                            ui.label("Model:");
+                            ui.text_edit_singleline(&mut self.options.model);
+                            ui.label("Temperature:");
+                            ui.add(
+                                egui::Slider::new(&mut self.options.temperature, 0.0..=1.0)
+                                    .text("Temperature"),
+                            );
+
+                            // how to detect on change of this
+
+                            ui.button("Save").clicked().then(|| {
+                                self.options.save_to_file();
+                                self.options_menu_open = false;
+                            });
+                        });
+                    if !is_open {
+                        self.options_menu_open = false;
+                    }
                 }
             });
 
@@ -227,7 +363,7 @@ impl eframe::App for MyEguiApp {
                         0.0,
                         TextFormat {
                             font_id: FontId::proportional(16.0),
-                            color: Color32::RED,
+                            background: Color32::ORANGE,
                             ..Default::default()
                         },
                     );
