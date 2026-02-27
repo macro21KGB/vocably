@@ -132,6 +132,19 @@ struct ProviderConfig {
     model: String,
     temperature: f32,
 }
+#[derive(Debug, Clone, Deserialize)]
+enum AIStatus {
+    Idle,
+    Running,
+    Success,
+    Error,
+}
+
+impl Default for AIStatus {
+    fn default() -> Self {
+        AIStatus::Idle
+    }
+}
 
 impl ProviderConfig {
     fn load_from_file(&mut self) {
@@ -166,6 +179,7 @@ struct MyEguiApp {
     initial_text: String,
     alternatives: Vec<AlternativeWord>,
     error_message: Option<String>,
+    ai_status: AIStatus,
     options_menu_open: bool,
     options: ProviderConfig,
     // Channel to receive results from async task
@@ -178,8 +192,10 @@ struct MyEguiApp {
 impl MyEguiApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         cc.egui_ctx.set_visuals(egui::Visuals::light());
-        let mut this = Self::default();
-
+        let mut this = Self {
+            options: ProviderConfig::default(),
+            ..Default::default()
+        };
         this.options.load_from_file();
 
         this
@@ -195,9 +211,12 @@ impl eframe::App for MyEguiApp {
                     Ok(words) => {
                         self.alternatives = words;
                         self.error_message = None;
+                        ctx.request_repaint();
+                        self.ai_status = AIStatus::Success;
                     }
                     Err(e) => {
                         self.error_message = Some(e);
+                        self.ai_status = AIStatus::Error;
                     }
                 }
                 self.result_receiver = None;
@@ -206,6 +225,12 @@ impl eframe::App for MyEguiApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Text Analyzer");
+            ui.label(match self.ai_status {
+                AIStatus::Idle => "Idle".to_string(),
+                AIStatus::Running => "Analyzing...".to_string(),
+                AIStatus::Success => "Analysis complete!".to_string(),
+                AIStatus::Error => "Error during analysis".to_string(),
+            });
             ui.horizontal(|ui| {
                 let button_accept = ui.button("Analyze text");
 
@@ -215,6 +240,7 @@ impl eframe::App for MyEguiApp {
 
                     let (tx, rx) = mpsc::channel();
                     self.result_receiver = Some(rx);
+                    self.ai_status = AIStatus::Running;
 
                     tokio::spawn(async move {
                         let result =
@@ -229,6 +255,7 @@ impl eframe::App for MyEguiApp {
                     self.options_menu_open = true;
                 }
 
+                // Show options menu if open
                 if self.options_menu_open {
                     let mut is_open = true;
                     egui::Window::new("Options")
@@ -366,7 +393,8 @@ impl eframe::App for MyEguiApp {
                         0.0,
                         TextFormat {
                             font_id: FontId::proportional(16.0),
-                            background: Color32::ORANGE,
+                            color: Color32::WHITE,
+                            background: Color32::DARK_GREEN,
                             ..Default::default()
                         },
                     );
