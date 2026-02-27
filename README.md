@@ -1,5 +1,7 @@
 # Vocably
 
+> THIS IS STILL A PREVIEW, NOT THE FINAL APPLICATION, BEWARE OF BUGS AND CRASHES
+
 Vocably is a smart, AI-powered desktop application written in Rust and powered by `egui`. It helps you refine your writing by analyzing your text and suggesting better, more contextually appropriate alternative words. The app uses Large Language Models (LLMs) to understand your sentences and highlight words that can be improved.
 
 ## Features
